@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ReelGrab – Instagram, Facebook & TikTok Downloader</title>
+<meta name="description" content="Download Instagram, Facebook and TikTok reels and videos.">
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--text:#16181d;--muted:#6b7280;--accent:#6d28d9;--border:#e5e7eb;--err:#b91c1c;--ok:#15803d}
+@media(prefers-color-scheme:dark){:root{--bg:#0e0f13;--card:#181a20;--text:#eef0f4;--muted:#9aa1ae;--accent:#a78bfa;--border:#2a2d36;--err:#f87171;--ok:#4ade80}}
+*{box-sizing:border-box}
+body{margin:0;font:16px/1.5 system-ui,sans-serif;background:var(--bg);color:var(--text)}
+header,main{max-width:720px;margin:0 auto;padding:16px 20px}
+header{display:flex;justify-content:space-between;align-items:center}
+.logo{font-weight:800;font-size:20px}.logo span{color:var(--accent)}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--muted);margin-right:6px}
+.dot.on{background:var(--ok)}.dot.off{background:var(--err)}
+h1{font-size:28px;line-height:1.2;margin:8px 0}
+.sub,.muted{color:var(--muted)}.muted{font-size:14px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px;margin:16px 0}
+input,select{width:100%;padding:12px;border-radius:10px;border:1px solid var(--border);background:var(--bg);color:var(--text);font:inherit}
+button{padding:12px 16px;border:0;border-radius:10px;background:var(--accent);color:#fff;font:inherit;font-weight:600;cursor:pointer}
+button.alt{background:transparent;color:var(--accent);border:1px solid var(--accent)}
+button:disabled{opacity:.5;cursor:wait}
+.row{display:flex;gap:10px;margin-top:10px}.row>*{flex:1}.row>.fit{flex:0 0 auto}
+.chips{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+.chip{padding:4px 12px;border-radius:99px;border:1px solid var(--border);font-size:13px;color:var(--muted)}
+.chip.on{border-color:var(--accent);color:var(--accent);font-weight:600}
+.media{display:flex;gap:14px}.media img{width:110px;height:150px;object-fit:cover;border-radius:10px;background:var(--bg)}
+.media h3{margin:0 0 4px;font-size:16px;word-break:break-word}
+.bar{height:8px;border-radius:99px;background:var(--border);overflow:hidden;margin-top:12px}
+.bar i{display:block;height:100%;width:0;background:var(--accent);transition:width .2s}
+.bar.ind i{width:40%;animation:s 1s infinite alternate}@keyframes s{to{margin-left:60%}}
+#msg.err{color:var(--err)}
+pre{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:12px;overflow-x:auto;font-size:13px;margin:8px 0}
+.hist{display:flex;justify-content:space-between;gap:10px;padding:8px 0;border-top:1px solid var(--border);font-size:14px;cursor:pointer}
+.hist span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+details summary{cursor:pointer;font-weight:600}
+footer{text-align:center;padding:20px;font-size:13px}
+</style></head><body>
+<header>
+  <div class="logo">Reel<span>Grab</span></div>
+  <div class="muted"><span id="dot" class="dot"></span><span id="status">connecting</span></div>
+</header>
+<main>
+  <h1>Download reels and videos</h1>
+  <p class="sub">Instagram, Facebook and TikTok. Paste a link, pick a quality, save it.</p>
+
+  <section class="card">
+    <input id="url" type="url" placeholder="https://..." autocomplete="off" inputmode="url">
+    <div class="chips" id="chips">
+      <span class="chip" data-p="instagram">Instagram</span>
+      <span class="chip" data-p="facebook">Facebook</span>
+      <span class="chip" data-p="tiktok">TikTok</span>
+    </div>
+    <div class="row"><button class="alt fit" id="paste">Paste</button><button id="go">Fetch video</button></div>
+    <div class="bar" id="bar" hidden><i></i></div>
+    <p id="msg" class="muted"></p>
+  </section>
+
+  <section class="card" id="result" hidden>
+    <div class="media"><img id="thumb" alt="">
+      <div><h3 id="title"></h3><p class="muted" id="meta"></p>
+        <select id="quality"></select></div></div>
+    <div class="row"><button id="dlv">Download video</button><button class="alt" id="dla">Audio (MP3)</button></div>
+  </section>
+
+  <section class="card" id="histCard" hidden>
+    <b>Recent</b><div id="hist"></div>
+    <button class="alt" id="clear" style="margin-top:10px">Clear history</button>
+  </section>
+
+  <section class="card">
+    <details><summary>Settings</summary>
+      <p class="muted">Server URL (leave empty if this site is served by the API itself)</p>
+      <input id="base" placeholder="https://your-app.koyeb.app">
+      <p class="muted">API key (only if the server requires one)</p>
+      <input id="key" placeholder="API key" type="password">
+      <div class="row"><button id="save">Save and reconnect</button></div>
+    </details>
+  </section>
+
+  <section class="card">
+    <details><summary>Developer API</summary>
+      <p class="muted">Get info</p>
+      <pre id="c1"></pre>
+      <p class="muted">Download</p>
+      <pre id="c2"></pre>
+      <p class="muted">Full interactive docs: <a id="docs" href="/docs">/docs</a></p>
+    </details>
+  </section>
+
+  <section class="card">
+    <details><summary>FAQ</summary>
+      <p class="muted">Private accounts and login-only posts usually can't be downloaded unless the server owner adds cookies. If a link fails, make sure the post is public and try again.</p>
+      <p class="muted">Only download content you own or have permission to save.</p>
+    </details>
+  </section>
+</main>
+<footer class="muted">ReelGrab</footer>
+<script src="config.js"></script>
+<script>
+const $=id=>document.getElementById(id), LS=localStorage;
+let base=(LS.rg_base||window.RG_BASE||"").replace(/\/+$/,"");
+$("base").value=LS.rg_base||""; $("key").value=LS.rg_key||"";
+const api=p=>base+p;
+const H=json=>{const h={};if(json)h["Content-Type"]="application/json";const k=LS.rg_key;if(k)h["X-API-Key"]=k;return h};
+const say=(t,e)=>{$("msg").textContent=t;$("msg").className=e?"err":"muted"};
+const bar=v=>{const b=$("bar");b.hidden=v===false;b.className="bar"+(v===null?" ind":"");if(typeof v==="number")b.firstElementChild.style.width=Math.round(v*100)+"%"};
+
+function snippets(){
+  const o=base||location.origin;
+  $("c1").textContent=`curl -X POST ${o}/api/info \\\n  -H "Content-Type: application/json" \\\n  -H "X-API-Key: KEY" \\\n  -d '{"url":"VIDEO_URL"}'`;
+  $("c2").textContent=`curl -OJ "${o}/api/download?url=VIDEO_URL&type=video&quality=720" \\\n  -H "X-API-Key: KEY"`;
+  $("docs").href=o+"/docs";
+}
+async function health(){
+  try{const r=await fetch(api("/api/health"));const d=await r.json();
+    $("dot").className="dot on";$("status").textContent="online"+(d.ffmpeg?"":" (no ffmpeg)");
+  }catch(e){$("dot").className="dot off";$("status").textContent="offline"}
+}
+$("save").onclick=()=>{
+  LS.rg_base=$("base").value.trim().replace(/\/+$/,"");LS.rg_key=$("key").value.trim();
+  base=(LS.rg_base||window.RG_BASE||"");snippets();health();say("Saved.");
+};
+
+function platform(u){
+  const l=u.toLowerCase();
+  return l.includes("instagram.com")?"instagram":/facebook\.com|fb\.watch|fb\.com/.test(l)?"facebook":l.includes("tiktok.com")?"tiktok":"";
+}
+$("url").oninput=()=>{const p=platform($("url").value);document.querySelectorAll(".chip").forEach(c=>c.classList.toggle("on",c.dataset.p===p))};
+$("paste").onclick=async()=>{try{$("url").value=(await navigator.clipboard.readText()).trim();$("url").oninput()}catch(e){say("Clipboard blocked. Paste manually.",1)}};
+
+function hist(){return JSON.parse(LS.rg_hist||"[]")}
+function addHist(url,title){
+  const h=hist().filter(x=>x.url!==url);h.unshift({url,title});LS.rg_hist=JSON.stringify(h.slice(0,10));drawHist();
+}
+function drawHist(){
+  const h=hist(),box=$("hist");box.textContent="";$("histCard").hidden=!h.length;
+  h.forEach(x=>{const d=document.createElement("div");d.className="hist";
+    const s=document.createElement("span");s.textContent=x.title||x.url;d.appendChild(s);
+    d.onclick=()=>{$("url").value=x.url;$("url").oninput();$("go").click()};box.appendChild(d)});
+}
+$("clear").onclick=()=>{delete LS.rg_hist;drawHist()};
+
+$("go").onclick=async()=>{
+  const url=$("url").value.trim();if(!url)return say("Paste a link first.",1);
+  $("go").disabled=true;$("result").hidden=true;say("Fetching info...");bar(null);
+  try{
+    const r=await fetch(api("/api/info"),{method:"POST",headers:H(1),body:JSON.stringify({url})});
+    const d=await r.json();if(!r.ok)throw new Error(d.detail||"Request failed");
+    $("thumb").src=d.thumbnail||"";$("thumb").hidden=!d.thumbnail;
+    $("title").textContent=d.title;
+    $("meta").textContent=[d.platform,d.uploader,d.duration?Math.round(d.duration)+"s":""].filter(Boolean).join(" · ");
+    const q=$("quality");q.textContent="";
+    [["","Best quality"],...d.qualities.map(h=>[h,h+"p"])].forEach(([v,t])=>{const o=document.createElement("option");o.value=v;o.textContent=t;q.appendChild(o)});
+    $("result").hidden=false;say("");addHist(url,d.title);
+  }catch(e){say(e.message==="Failed to fetch"?"Can't reach the server. Check Settings.":e.message,1)}
+  bar(false);$("go").disabled=false;
+};
+
+async function dl(type){
+  const url=$("url").value.trim(),q=$("quality").value;
+  $("dlv").disabled=$("dla").disabled=true;say("Preparing file on server...");bar(null);
+  try{
+    const p=new URLSearchParams({url,type});if(q&&type==="video")p.set("quality",q);
+    const r=await fetch(api("/api/download?"+p),{headers:H()});
+    if(!r.ok){let m="Download failed";try{m=(await r.json()).detail||m}catch(e){}throw new Error(m)}
+    const total=+r.headers.get("content-length")||0,rd=r.body.getReader(),ch=[];let got=0;
+    say("Downloading...");
+    for(;;){const{done,value}=await rd.read();if(done)break;ch.push(value);got+=value.length;bar(total?got/total:null)}
+    const m=(r.headers.get("content-disposition")||"").match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i);
+    const a=document.createElement("a");a.href=URL.createObjectURL(new Blob(ch));
+    a.download=m?decodeURIComponent(m[1]):"video";document.body.appendChild(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href),5000);say("Done. Check your downloads.");
+  }catch(e){say(e.message,1)}
+  bar(false);$("dlv").disabled=$("dla").disabled=false;
+}
+$("dlv").onclick=()=>dl("video");$("dla").onclick=()=>dl("audio");
+$("url").addEventListener("keydown",e=>{if(e.key==="Enter")$("go").click()});
+snippets();health();drawHist();
+</script></body></html>
