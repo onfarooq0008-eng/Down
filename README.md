@@ -51,3 +51,11 @@ Do not run the downloader itself on Vercel: serverless functions have short time
 Supports every site yt-dlp supports (set `ALLOW_GENERIC=true` to also allow the generic web-page extractor; off by default for safety).
 `/api/info` returns the direct media URLs found by yt-dlp. The browser downloads straight from the source CDN, so your server only does the lookup.
 Limits: some CDNs block cross-site downloads (the site then opens the file in a new tab), YouTube links are tied to the server's IP, and HLS/DASH streams and audio conversion need the server fallback (`ENABLE_SERVER_DOWNLOAD=false` turns it off to save bandwidth).
+
+## v3
+Server downloads removed: the API only returns direct links. Instagram/YouTube-style sources split video and audio, so the site merges them in the visitor's browser (ffmpeg.wasm), never on your server.
+
+## Relay for TikTok (v4)
+TikTok's CDN returns "Access Denied" to browsers (needs cookies + the server's IP). For hosts in `RELAY_HOSTS`
+(default: TikTok domains) `/api/info` returns a signed, 1-hour `relay` link and the site downloads through `/api/stream`.
+It streams (no disk, no ffmpeg) and only uses bandwidth for those hosts. `RELAY=false` disables it. Set `SECRET` if you run several instances.

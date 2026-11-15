@@ -5,7 +5,11 @@ Web UI + REST API, powered by FastAPI and yt-dlp.
 Run:  uvicorn app:app --host 0.0.0.0 --port 8000
 Docs: http://localhost:8000/docs
 """
+import base64
+import hashlib
+import hmac
 import ipaddress
+import json
 import os
 import re
 import socket
@@ -18,21 +22,28 @@ from collections import defaultdict, deque
 from typing import Optional
 from urllib.parse import urlparse
 
+import httpx
 import yt_dlp
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
+from urllib.parse import quote
 
 # ---------------------------------------------------------------- config
 API_KEYS = {k.strip() for k in os.getenv("API_KEYS", "").split(",") if k.strip()}
 RATE_LIMIT = int(os.getenv("RATE_LIMIT_PER_MIN", "10"))
 MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT", "3"))
 MAX_MB = int(os.getenv("MAX_FILE_MB", "500"))
-SERVER_DL = os.getenv("ENABLE_SERVER_DOWNLOAD", "true").lower() == "true"  # fallback that uses YOUR bandwidth
+# Some CDNs (TikTok) refuse browsers: they need cookies/headers and the server's IP. For these hosts only,
+# the API hands out a signed relay link that streams the file through the server (no disk, no ffmpeg).
+RELAY = os.getenv("RELAY", "true").lower() == "true"
+RELAY_HOSTS = tuple(h.strip() for h in os.getenv(
+    "RELAY_HOSTS", "tiktok.com,tiktokcdn.com,tiktokv.com,byteoversea.com,ibytedtos.com,musical.ly").split(",") if h.strip())
+SECRET = os.getenv("SECRET") or secrets.token_hex(16)
 ALLOW_GENERIC = os.getenv("ALLOW_GENERIC", "false").lower() == "true"  # arbitrary-page extractor (riskier)
 COOKIES_FILE = os.getenv("COOKIES_FILE", "")  # Netscape cookies.txt (needed for some IG/FB content)
 _b64 = os.getenv("COOKIES_B64", "")  # alternative: base64 of cookies.txt as an env var
@@ -135,77 +146,75 @@ def safe_name(s: str) -> str:
     return (s[:80] or "video")
 
 
+def _b64(b: bytes) -> str:
+    return base64.urlsafe_b64encode(b).decode().rstrip("=")
+
+
+def _sign(p: str) -> str:
+    return hmac.new(SECRET.encode(), p.encode(), hashlib.sha256).hexdigest()[:32]
+
+
+def make_token(d: dict) -> str:
+    p = _b64(json.dumps({**d, "e": int(time.time()) + 3600}).encode())
+    return p + "." + _sign(p)
+
+
+def read_token(t: str) -> dict:
+    try:
+        p, sig = t.rsplit(".", 1)
+        if not hmac.compare_digest(sig, _sign(p)):
+            raise ValueError
+        d = json.loads(base64.urlsafe_b64decode(p + "=" * (-len(p) % 4)))
+        if d["e"] < time.time():
+            raise ValueError
+        return d
+    except Exception:
+        raise HTTPException(403, "Link expired or invalid. Fetch the video again.")
+
+
+def _row(f, ydl=None):
+    u = f.get("url")
+    if not u or not u.startswith("http"):
+        return None
+    vc, ac = f.get("vcodec"), f.get("acodec")
+    unk = vc is None and ac is None
+    v = unk or vc not in (None, "none")
+    a = unk or ac not in (None, "none")
+    if not v and not a:
+        return None
+    row = {
+        "id": f.get("format_id"), "ext": f.get("ext"), "height": f.get("height"),
+        "note": f.get("format_note") or f.get("format_id"),
+        "size": f.get("filesize") or f.get("filesize_approx"),
+        "kind": "video" if v and a else "video-only" if v else "audio",
+        "stream": (f.get("protocol") or "").startswith(("m3u8", "http_dash", "dash", "ism", "f4m")),
+        "url": u,
+    }
+    host = (urlparse(u).hostname or "").lower()
+    if RELAY and ydl is not None and host.endswith(RELAY_HOSTS):
+        ck = ydl.cookiejar.get_cookie_header(u) if getattr(ydl, "cookiejar", None) else ""
+        row["relay"] = "/api/stream?t=" + make_token({"u": u, "h": f.get("http_headers") or {}, "c": ck})
+    return row
+
+
 def fetch_info(url: str) -> dict:
-    opts = {**base_opts(), "skip_download": True}
+    opts = {**base_opts(), "skip_download": True, "format": "bv*+ba/b"}
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=False)
     if info.get("entries"):
         info = next((e for e in info["entries"] if e), info)
-    rows = []
-    for f in info.get("formats") or ([info] if info.get("url") else []):
-        u = f.get("url")
-        if not u or not u.startswith("http"):
-            continue
-        vc, ac = f.get("vcodec"), f.get("acodec")
-        unk = vc is None and ac is None
-        v = unk or vc not in (None, "none")
-        a = unk or ac not in (None, "none")
-        if not v and not a:
-            continue
-        proto = f.get("protocol") or ""
-        rows.append({
-            "id": f.get("format_id"), "ext": f.get("ext"), "height": f.get("height"),
-            "note": f.get("format_note") or f.get("format_id"),
-            "size": f.get("filesize") or f.get("filesize_approx"),
-            "kind": "video" if v and a else "video-only" if v else "audio",
-            "stream": proto.startswith(("m3u8", "http_dash", "dash", "ism", "f4m")),
-            "url": u,
-        })
+    allf = info.get("formats") or [info]
+    rows = [r for r in (_row(f, ydl) for f in allf) if r]
     rank = {"video": 0, "video-only": 1, "audio": 2}
     rows.sort(key=lambda r: (rank[r["kind"]], -(r["height"] or 0)))
+    best = [r for r in (_row(f, ydl) for f in (info.get("requested_formats") or [info])) if r]
     return {
         "site": info.get("extractor_key"), "id": info.get("id"),
         "title": info.get("title") or (info.get("description") or "")[:80] or "Untitled",
         "uploader": info.get("uploader") or info.get("channel"),
         "duration": info.get("duration"), "thumbnail": info.get("thumbnail"),
-        "formats": rows, "server_download": SERVER_DL and HAS_FFMPEG is not None,
+        "formats": rows, "best": best, "hidden": len(allf) - len(rows),
     }
-
-
-def run_download(url: str, kind: str, quality: Optional[int]) -> tuple[str, str, str]:
-    tmp = tempfile.mkdtemp(prefix="reelgrab_")
-    opts = {
-        **base_opts(),
-        "outtmpl": os.path.join(tmp, "%(id)s.%(ext)s"),
-        "max_filesize": MAX_MB * 1024 * 1024,
-    }
-    if kind == "audio":
-        opts["format"] = "bestaudio/best"
-        if HAS_FFMPEG:
-            opts["postprocessors"] = [
-                {"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}
-            ]
-    else:
-        h = f"[height<={quality}]" if quality else ""
-        if HAS_FFMPEG:
-            opts["format"] = f"bestvideo{h}+bestaudio/best{h}/best"
-            opts["merge_output_format"] = "mp4"
-        else:
-            opts["format"] = f"best{h}[ext=mp4]/best{h}/best"
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            if info.get("entries"):
-                info = next(iter(info["entries"]))
-        files = [os.path.join(tmp, f) for f in os.listdir(tmp)]
-        if not files:
-            raise RuntimeError("Download produced no file (maybe it exceeds the size limit)")
-        path = max(files, key=os.path.getsize)
-        ext = os.path.splitext(path)[1]
-        return tmp, path, safe_name(info.get("title") or info.get("id")) + ext
-    except Exception:
-        shutil.rmtree(tmp, ignore_errors=True)
-        raise
 
 
 # ---------------------------------------------------------------- API
@@ -222,35 +231,33 @@ async def api_info(body: InfoRequest, _=Depends(auth)):
         raise HTTPException(422, clean_error(e))
 
 
-@app.get("/api/download", tags=["API"], summary="Download a video or audio file")
-async def api_download(
-    url: str,
-    type: str = "video",
-    quality: Optional[int] = None,
-    _=Depends(auth),
-):
-    """`type` = video | audio. `quality` = max height in pixels (e.g. 720)."""
-    detect_platform(url)
-    if not SERVER_DL:
-        raise HTTPException(403, "Server downloads are disabled; use the direct links")
-    if type not in ("video", "audio"):
-        raise HTTPException(400, "type must be 'video' or 'audio'")
-    if not _slots.acquire(blocking=False):
-        raise HTTPException(503, "Server busy, try again shortly")
+@app.get("/api/stream", tags=["API"], summary="Signed relay for CDNs that block browsers")
+async def api_stream(t: str, request: Request, name: str = "video.mp4"):
+    d = read_token(t)
+    hdr = dict(d.get("h") or {})
+    if d.get("c"):
+        hdr["Cookie"] = d["c"]
+    if request.headers.get("range"):
+        hdr["Range"] = request.headers["range"]
+    client = httpx.AsyncClient(timeout=30, follow_redirects=False)
     try:
-        tmp, path, name = await run_in_threadpool(run_download, url, type, quality)
-    except yt_dlp.utils.DownloadError as e:
-        _slots.release()
-        raise HTTPException(422, clean_error(e))
+        r = await client.send(client.build_request("GET", d["u"], headers=hdr), stream=True)
     except Exception as e:
-        _slots.release()
-        raise HTTPException(500, clean_error(e))
+        await client.aclose()
+        raise HTTPException(502, "Could not reach the source: " + clean_error(e))
+    if r.status_code >= 400:
+        code = r.status_code
+        await r.aclose()
+        await client.aclose()
+        raise HTTPException(502, f"Source refused the request ({code})")
 
-    def cleanup():
-        shutil.rmtree(tmp, ignore_errors=True)
-        _slots.release()
+    async def close():
+        await r.aclose()
+        await client.aclose()
 
-    return FileResponse(path, filename=name, background=BackgroundTask(cleanup))
+    out = {k: r.headers[k] for k in ("content-type", "content-length", "content-range", "accept-ranges") if k in r.headers}
+    out["Content-Disposition"] = "attachment; filename*=UTF-8''" + quote(safe_name(name.rsplit(".", 1)[0]) + "." + (name.rsplit(".", 1)[-1][:5] if "." in name else "mp4"))
+    return StreamingResponse(r.aiter_raw(), status_code=r.status_code, headers=out, background=BackgroundTask(close))
 
 
 @app.get("/api/health", tags=["API"])
