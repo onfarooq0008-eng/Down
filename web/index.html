@@ -58,11 +58,7 @@ footer{text-align:center;padding:20px;font-size:13px}
     <div class="media"><img id="thumb" alt="">
       <div><h3 id="title"></h3><p class="muted" id="meta"></p></div></div>
     <div id="fmts"></div>
-    <div id="srv" hidden>
-      <p class="muted">No direct link? Server download (uses server bandwidth):</p>
-      <div class="row"><button class="alt" id="dlv">Video (merged)</button><button class="alt" id="dla">Audio (MP3)</button></div>
-    </div>
-  </section>
+    </section>
 
   <section class="card" id="histCard" hidden>
     <b>Recent</b><div id="hist"></div>
@@ -83,7 +79,7 @@ footer{text-align:center;padding:20px;font-size:13px}
     <details><summary>Developer API</summary>
       <p class="muted">Get info</p>
       <pre id="c1"></pre>
-      <p class="muted">Download</p>
+      <p class="muted">Get the direct links</p>
       <pre id="c2"></pre>
       <p class="muted">Full interactive docs: <a id="docs" href="/docs">/docs</a></p>
     </details>
@@ -104,7 +100,7 @@ const bar=v=>{const b=$("bar");b.hidden=v===false;b.className="bar"+(v===null?" 
 function snippets(){
   const o=base||location.origin;
   $("c1").textContent=`curl -X POST ${o}/api/info \\\n  -H "Content-Type: application/json" \\\n  -H "X-API-Key: KEY" \\\n  -d '{"url":"VIDEO_URL"}'`;
-  $("c2").textContent=`curl -OJ "${o}/api/download?url=VIDEO_URL&type=video&quality=720" \\\n  -H "X-API-Key: KEY"`;
+  $("c2").textContent=`# every response lists direct file links in "formats" and the best pick in "best"\ncurl -s -X POST ${o}/api/info -H "Content-Type: application/json" -H "X-API-Key: KEY" \\\n  -d '{"url":"VIDEO_URL"}' | jq -r ".best[].url"`;
   $("docs").href=o+"/docs";
 }
 async function health(){
@@ -132,27 +128,52 @@ function drawHist(){
 $("clear").onclick=()=>{delete LS.rg_hist;drawHist()};
 
 const mb=n=>n?(n/1048576).toFixed(1)+" MB":"";
-let cur=null;
-function fname(f){return (cur.title||"video").replace(/[^\w\- ]+/g,"").trim().slice(0,60)+(f.height?"_"+f.height+"p":"")+"."+(f.ext||"mp4")}
+let cur=null,ff=null;
+const U=f=>f.relay?api(f.relay):f.url;
+const fname=(f,x)=>(cur.title||"video").replace(/[^\w\- ]+/g,"").trim().slice(0,60)+(f.height?"_"+f.height+"p":"")+"."+(x||f.ext||"mp4");
 function save(blob,n){const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=n;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),5000)}
+async function pull(u){
+  const r=await fetch(u);if(!r.ok)throw 0;
+  const t=+r.headers.get("content-length")||0,rd=r.body.getReader(),ch=[];let g=0;
+  for(;;){const{done,value}=await rd.read();if(done)break;ch.push(value);g+=value.length;if(t)bar(g/t)}
+  return new Blob(ch);
+}
 async function direct(f){
   say("Downloading directly from the source...");bar(null);
-  try{
-    const r=await fetch(f.url);if(!r.ok)throw 0;
-    const total=+r.headers.get("content-length")||0,rd=r.body.getReader(),ch=[];let got=0;
-    for(;;){const{done,value}=await rd.read();if(done)break;ch.push(value);got+=value.length;bar(total?got/total:null)}
-    save(new Blob(ch),fname(f));say("Done. Check your downloads.");
-  }catch(e){window.open(f.url,"_blank","noopener");say("Opened in a new tab (the source blocks in-page download). Use Save / long-press there.")}
+  try{save(await pull(U(f)),fname(f));say("Done. Check your downloads.")}
+  catch(e){window.open(U(f)+(f.relay?"&name="+encodeURIComponent(fname(f)):""),"_blank","noopener");say("Opened in a new tab (the source blocks in-page download). Use Save / long-press there.")}
   bar(false);
 }
-function group(t,list){
+const ld=s=>new Promise((ok,no)=>{const e=document.createElement("script");e.src=s;e.onload=ok;e.onerror=no;document.head.appendChild(e)});
+async function engine(){
+  if(ff)return ff;
+  const B="https://cdn.jsdelivr.net/npm/",c=B+"@ffmpeg/core@0.12.6/dist/umd/";
+  await ld(B+"@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js");await ld(B+"@ffmpeg/util@0.12.1/dist/umd/index.js");
+  const T=FFmpegUtil.toBlobURL,f=new FFmpegWASM.FFmpeg();
+  await f.load({classWorkerURL:await T(B+"@ffmpeg/ffmpeg@0.12.10/dist/umd/814.ffmpeg.js","text/javascript"),coreURL:await T(c+"ffmpeg-core.js","text/javascript"),wasmURL:await T(c+"ffmpeg-core.wasm","application/wasm")});
+  return ff=f;
+}
+async function merge(v,a){
+  say("Downloading video and audio from the source...");bar(null);
+  try{
+    const[vb,ab]=await Promise.all([pull(U(v)),pull(U(a))]);
+    say("Loading the merger (one-time, ~30 MB)...");bar(null);const f=await engine();
+    say("Merging on your device...");
+    const mp4=/m4a|mp4|aac/.test(a.ext),o=mp4?"out.mp4":"out.mkv";
+    await f.writeFile("v",new Uint8Array(await vb.arrayBuffer()));await f.writeFile("a",new Uint8Array(await ab.arrayBuffer()));
+    await f.exec(["-i","v","-i","a","-c","copy",...(mp4?["-movflags","+faststart"]:[]),o]);
+    const d=await f.readFile(o);save(new Blob([d.buffer]),fname(v,mp4?"mp4":"mkv"));say("Done. Check your downloads.");
+  }catch(e){say("Couldn't merge here (the source may block in-browser access). Use Download on the video and the audio under Separate files.",1)}
+  bar(false);
+}
+function group(t,list,fn){
   if(!list.length)return;const h=document.createElement("h4");h.textContent=t;$("fmts").appendChild(h);
   list.forEach(f=>{
     const d=document.createElement("div");d.className="f";
     const s=document.createElement("span");s.textContent=[f.height?f.height+"p":f.note,f.ext,mb(f.size)].filter(Boolean).join(" · ");
-    const b=document.createElement("button");b.textContent="Download";b.onclick=()=>direct(f);
+    const b=document.createElement("button");b.textContent=fn?"Download + sound":"Download";b.onclick=()=>fn?fn(f):direct(f);
     const c=document.createElement("button");c.className="alt";c.textContent="Copy link";
-    c.onclick=()=>navigator.clipboard.writeText(f.url).then(()=>say("Link copied."));
+    c.onclick=()=>navigator.clipboard.writeText(U(f)).then(()=>say("Link copied."));
     d.append(s,b,c);$("fmts").appendChild(d);
   });
 }
@@ -165,25 +186,17 @@ $("go").onclick=async()=>{
     cur=d;$("thumb").src=d.thumbnail||"";$("thumb").hidden=!d.thumbnail;$("title").textContent=d.title;
     $("meta").textContent=[d.site,d.uploader,d.duration?Math.round(d.duration)+"s":""].filter(Boolean).join(" · ");
     $("fmts").textContent="";const ok=d.formats.filter(f=>!f.stream);
+    const vo=ok.filter(f=>f.kind==="video-only"),au=ok.filter(f=>f.kind==="audio").sort((x,y)=>(y.size||0)-(x.size||0));
+    const A=d.best.find(f=>f.kind==="audio")||au.find(f=>/m4a|mp4|aac/.test(f.ext))||au[0];
     group("Video + audio",ok.filter(f=>f.kind==="video"));
-    group("Video only (no sound)",ok.filter(f=>f.kind==="video-only"));
-    group("Audio only",ok.filter(f=>f.kind==="audio"));
+    if(A)group("Video with sound (merged on your device)",vo,v=>merge(v,A));
+    group(A?"Separate files: video only":"Video only (this source gives no audio link)",vo);
+    group("Separate files: audio only",au);
     if(!ok.length){const p=document.createElement("p");p.className="muted";p.textContent="No direct file link for this video (stream only).";$("fmts").appendChild(p)}
-    $("srv").hidden=!d.server_download;$("result").hidden=false;say("");addHist(url,d.title);
+    $("result").hidden=false;say("");addHist(url,d.title);
   }catch(e){say(e.message==="Failed to fetch"?"Can't reach the server. Check Settings.":e.message,1)}
   bar(false);$("go").disabled=false;
 };
-async function srv(type){
-  const url=$("url").value.trim();$("dlv").disabled=$("dla").disabled=true;say("Server is preparing the file...");bar(null);
-  try{
-    const r=await fetch(api("/api/download?"+new URLSearchParams({url,type})),{headers:H()});
-    if(!r.ok){let m="Download failed";try{m=(await r.json()).detail||m}catch(e){}throw new Error(m)}
-    const m=(r.headers.get("content-disposition")||"").match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i);
-    save(await r.blob(),m?decodeURIComponent(m[1]):"video");say("Done.");
-  }catch(e){say(e.message,1)}
-  bar(false);$("dlv").disabled=$("dla").disabled=false;
-}
-$("dlv").onclick=()=>srv("video");$("dla").onclick=()=>srv("audio");
 $("url").addEventListener("keydown",e=>{if(e.key==="Enter")$("go").click()});
 snippets();health();drawHist();
 </script></body></html>
