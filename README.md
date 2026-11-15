@@ -46,3 +46,8 @@ Open http://localhost:8000 (UI) or http://localhost:8000/docs (API docs).
 3. On Koyeb set `ALLOWED_ORIGINS=https://your-site.vercel.app` to lock down CORS.
 
 Do not run the downloader itself on Vercel: serverless functions have short timeouts, small response limits and no ffmpeg, so downloads will fail. Keep the API on Koyeb (or any Docker host).
+
+## Direct downloads (v2)
+Supports every site yt-dlp supports (set `ALLOW_GENERIC=true` to also allow the generic web-page extractor; off by default for safety).
+`/api/info` returns the direct media URLs found by yt-dlp. The browser downloads straight from the source CDN, so your server only does the lookup.
+Limits: some CDNs block cross-site downloads (the site then opens the file in a new tab), YouTube links are tied to the server's IP, and HLS/DASH streams and audio conversion need the server fallback (`ENABLE_SERVER_DOWNLOAD=false` turns it off to save bandwidth).

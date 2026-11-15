@@ -2,7 +2,7 @@
 <html lang="en"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ReelGrab – Instagram, Facebook & TikTok Downloader</title>
+<title>ReelGrab – Video Downloader</title>
 <meta name="description" content="Download Instagram, Facebook and TikTok reels and videos.">
 <style>
 :root{--bg:#f6f7f9;--card:#fff;--text:#16181d;--muted:#6b7280;--accent:#6d28d9;--border:#e5e7eb;--err:#b91c1c;--ok:#15803d}
@@ -34,6 +34,7 @@ button:disabled{opacity:.5;cursor:wait}
 pre{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:12px;overflow-x:auto;font-size:13px;margin:8px 0}
 .hist{display:flex;justify-content:space-between;gap:10px;padding:8px 0;border-top:1px solid var(--border);font-size:14px;cursor:pointer}
 .hist span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.f{display:flex;align-items:center;gap:8px;padding:8px 0;border-top:1px solid var(--border);font-size:14px}.f span{flex:1}.f button{padding:6px 12px;font-size:13px}h4{margin:14px 0 2px;color:var(--muted);font-size:13px}
 details summary{cursor:pointer;font-weight:600}
 footer{text-align:center;padding:20px;font-size:13px}
 </style></head><body>
@@ -43,15 +44,11 @@ footer{text-align:center;padding:20px;font-size:13px}
 </header>
 <main>
   <h1>Download reels and videos</h1>
-  <p class="sub">Instagram, Facebook and TikTok. Paste a link, pick a quality, save it.</p>
+  <p class="sub">Instagram, Facebook, TikTok, YouTube, X and more. Paste a link and save it.</p>
 
   <section class="card">
     <input id="url" type="url" placeholder="https://..." autocomplete="off" inputmode="url">
-    <div class="chips" id="chips">
-      <span class="chip" data-p="instagram">Instagram</span>
-      <span class="chip" data-p="facebook">Facebook</span>
-      <span class="chip" data-p="tiktok">TikTok</span>
-    </div>
+    <p class="muted" style="margin:10px 0 0">Works with 1000+ sites supported by yt-dlp.</p>
     <div class="row"><button class="alt fit" id="paste">Paste</button><button id="go">Fetch video</button></div>
     <div class="bar" id="bar" hidden><i></i></div>
     <p id="msg" class="muted"></p>
@@ -59,9 +56,12 @@ footer{text-align:center;padding:20px;font-size:13px}
 
   <section class="card" id="result" hidden>
     <div class="media"><img id="thumb" alt="">
-      <div><h3 id="title"></h3><p class="muted" id="meta"></p>
-        <select id="quality"></select></div></div>
-    <div class="row"><button id="dlv">Download video</button><button class="alt" id="dla">Audio (MP3)</button></div>
+      <div><h3 id="title"></h3><p class="muted" id="meta"></p></div></div>
+    <div id="fmts"></div>
+    <div id="srv" hidden>
+      <p class="muted">No direct link? Server download (uses server bandwidth):</p>
+      <div class="row"><button class="alt" id="dlv">Video (merged)</button><button class="alt" id="dla">Audio (MP3)</button></div>
+    </div>
   </section>
 
   <section class="card" id="histCard" hidden>
@@ -89,13 +89,7 @@ footer{text-align:center;padding:20px;font-size:13px}
     </details>
   </section>
 
-  <section class="card">
-    <details><summary>FAQ</summary>
-      <p class="muted">Private accounts and login-only posts usually can't be downloaded unless the server owner adds cookies. If a link fails, make sure the post is public and try again.</p>
-      <p class="muted">Only download content you own or have permission to save.</p>
-    </details>
-  </section>
-</main>
+  </main>
 <footer class="muted">ReelGrab</footer>
 <script src="config.js"></script>
 <script>
@@ -123,12 +117,7 @@ $("save").onclick=()=>{
   base=(LS.rg_base||window.RG_BASE||"");snippets();health();say("Saved.");
 };
 
-function platform(u){
-  const l=u.toLowerCase();
-  return l.includes("instagram.com")?"instagram":/facebook\.com|fb\.watch|fb\.com/.test(l)?"facebook":l.includes("tiktok.com")?"tiktok":"";
-}
-$("url").oninput=()=>{const p=platform($("url").value);document.querySelectorAll(".chip").forEach(c=>c.classList.toggle("on",c.dataset.p===p))};
-$("paste").onclick=async()=>{try{$("url").value=(await navigator.clipboard.readText()).trim();$("url").oninput()}catch(e){say("Clipboard blocked. Paste manually.",1)}};
+$("paste").onclick=async()=>{try{$("url").value=(await navigator.clipboard.readText()).trim()}catch(e){say("Clipboard blocked. Paste manually.",1)}};
 
 function hist(){return JSON.parse(LS.rg_hist||"[]")}
 function addHist(url,title){
@@ -138,44 +127,63 @@ function drawHist(){
   const h=hist(),box=$("hist");box.textContent="";$("histCard").hidden=!h.length;
   h.forEach(x=>{const d=document.createElement("div");d.className="hist";
     const s=document.createElement("span");s.textContent=x.title||x.url;d.appendChild(s);
-    d.onclick=()=>{$("url").value=x.url;$("url").oninput();$("go").click()};box.appendChild(d)});
+    d.onclick=()=>{$("url").value=x.url;$("go").click()};box.appendChild(d)});
 }
 $("clear").onclick=()=>{delete LS.rg_hist;drawHist()};
 
+const mb=n=>n?(n/1048576).toFixed(1)+" MB":"";
+let cur=null;
+function fname(f){return (cur.title||"video").replace(/[^\w\- ]+/g,"").trim().slice(0,60)+(f.height?"_"+f.height+"p":"")+"."+(f.ext||"mp4")}
+function save(blob,n){const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=n;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),5000)}
+async function direct(f){
+  say("Downloading directly from the source...");bar(null);
+  try{
+    const r=await fetch(f.url);if(!r.ok)throw 0;
+    const total=+r.headers.get("content-length")||0,rd=r.body.getReader(),ch=[];let got=0;
+    for(;;){const{done,value}=await rd.read();if(done)break;ch.push(value);got+=value.length;bar(total?got/total:null)}
+    save(new Blob(ch),fname(f));say("Done. Check your downloads.");
+  }catch(e){window.open(f.url,"_blank","noopener");say("Opened in a new tab (the source blocks in-page download). Use Save / long-press there.")}
+  bar(false);
+}
+function group(t,list){
+  if(!list.length)return;const h=document.createElement("h4");h.textContent=t;$("fmts").appendChild(h);
+  list.forEach(f=>{
+    const d=document.createElement("div");d.className="f";
+    const s=document.createElement("span");s.textContent=[f.height?f.height+"p":f.note,f.ext,mb(f.size)].filter(Boolean).join(" · ");
+    const b=document.createElement("button");b.textContent="Download";b.onclick=()=>direct(f);
+    const c=document.createElement("button");c.className="alt";c.textContent="Copy link";
+    c.onclick=()=>navigator.clipboard.writeText(f.url).then(()=>say("Link copied."));
+    d.append(s,b,c);$("fmts").appendChild(d);
+  });
+}
 $("go").onclick=async()=>{
   const url=$("url").value.trim();if(!url)return say("Paste a link first.",1);
   $("go").disabled=true;$("result").hidden=true;say("Fetching info...");bar(null);
   try{
     const r=await fetch(api("/api/info"),{method:"POST",headers:H(1),body:JSON.stringify({url})});
     const d=await r.json();if(!r.ok)throw new Error(d.detail||"Request failed");
-    $("thumb").src=d.thumbnail||"";$("thumb").hidden=!d.thumbnail;
-    $("title").textContent=d.title;
-    $("meta").textContent=[d.platform,d.uploader,d.duration?Math.round(d.duration)+"s":""].filter(Boolean).join(" · ");
-    const q=$("quality");q.textContent="";
-    [["","Best quality"],...d.qualities.map(h=>[h,h+"p"])].forEach(([v,t])=>{const o=document.createElement("option");o.value=v;o.textContent=t;q.appendChild(o)});
-    $("result").hidden=false;say("");addHist(url,d.title);
+    cur=d;$("thumb").src=d.thumbnail||"";$("thumb").hidden=!d.thumbnail;$("title").textContent=d.title;
+    $("meta").textContent=[d.site,d.uploader,d.duration?Math.round(d.duration)+"s":""].filter(Boolean).join(" · ");
+    $("fmts").textContent="";const ok=d.formats.filter(f=>!f.stream);
+    group("Video + audio",ok.filter(f=>f.kind==="video"));
+    group("Video only (no sound)",ok.filter(f=>f.kind==="video-only"));
+    group("Audio only",ok.filter(f=>f.kind==="audio"));
+    if(!ok.length){const p=document.createElement("p");p.className="muted";p.textContent="No direct file link for this video (stream only).";$("fmts").appendChild(p)}
+    $("srv").hidden=!d.server_download;$("result").hidden=false;say("");addHist(url,d.title);
   }catch(e){say(e.message==="Failed to fetch"?"Can't reach the server. Check Settings.":e.message,1)}
   bar(false);$("go").disabled=false;
 };
-
-async function dl(type){
-  const url=$("url").value.trim(),q=$("quality").value;
-  $("dlv").disabled=$("dla").disabled=true;say("Preparing file on server...");bar(null);
+async function srv(type){
+  const url=$("url").value.trim();$("dlv").disabled=$("dla").disabled=true;say("Server is preparing the file...");bar(null);
   try{
-    const p=new URLSearchParams({url,type});if(q&&type==="video")p.set("quality",q);
-    const r=await fetch(api("/api/download?"+p),{headers:H()});
+    const r=await fetch(api("/api/download?"+new URLSearchParams({url,type})),{headers:H()});
     if(!r.ok){let m="Download failed";try{m=(await r.json()).detail||m}catch(e){}throw new Error(m)}
-    const total=+r.headers.get("content-length")||0,rd=r.body.getReader(),ch=[];let got=0;
-    say("Downloading...");
-    for(;;){const{done,value}=await rd.read();if(done)break;ch.push(value);got+=value.length;bar(total?got/total:null)}
     const m=(r.headers.get("content-disposition")||"").match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i);
-    const a=document.createElement("a");a.href=URL.createObjectURL(new Blob(ch));
-    a.download=m?decodeURIComponent(m[1]):"video";document.body.appendChild(a);a.click();a.remove();
-    setTimeout(()=>URL.revokeObjectURL(a.href),5000);say("Done. Check your downloads.");
+    save(await r.blob(),m?decodeURIComponent(m[1]):"video");say("Done.");
   }catch(e){say(e.message,1)}
   bar(false);$("dlv").disabled=$("dla").disabled=false;
 }
-$("dlv").onclick=()=>dl("video");$("dla").onclick=()=>dl("audio");
+$("dlv").onclick=()=>srv("video");$("dla").onclick=()=>srv("audio");
 $("url").addEventListener("keydown",e=>{if(e.key==="Enter")$("go").click()});
 snippets();health();drawHist();
 </script></body></html>

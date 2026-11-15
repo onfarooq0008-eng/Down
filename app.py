@@ -5,8 +5,10 @@ Web UI + REST API, powered by FastAPI and yt-dlp.
 Run:  uvicorn app:app --host 0.0.0.0 --port 8000
 Docs: http://localhost:8000/docs
 """
+import ipaddress
 import os
 import re
+import socket
 import shutil
 import secrets
 import tempfile
@@ -30,13 +32,24 @@ API_KEYS = {k.strip() for k in os.getenv("API_KEYS", "").split(",") if k.strip()
 RATE_LIMIT = int(os.getenv("RATE_LIMIT_PER_MIN", "10"))
 MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT", "3"))
 MAX_MB = int(os.getenv("MAX_FILE_MB", "500"))
+SERVER_DL = os.getenv("ENABLE_SERVER_DOWNLOAD", "true").lower() == "true"  # fallback that uses YOUR bandwidth
+ALLOW_GENERIC = os.getenv("ALLOW_GENERIC", "false").lower() == "true"  # arbitrary-page extractor (riskier)
 COOKIES_FILE = os.getenv("COOKIES_FILE", "")  # Netscape cookies.txt (needed for some IG/FB content)
-_b64 = os.getenv("COOKIES_B64", "").strip()  # alternative: base64 of cookies.txt as an env var
-if _b64:
+_b64 = os.getenv("COOKIES_B64", "")  # alternative: base64 of cookies.txt as an env var
+if _b64.strip():
     import base64
-    COOKIES_FILE = os.path.join(tempfile.gettempdir(), "cookies.txt")
-    with open(COOKIES_FILE, "wb") as _f:
-        _f.write(base64.b64decode(_b64))
+    try:
+        _raw = re.sub(r"[^A-Za-z0-9+/_-]", "", _b64)  # drop spaces, quotes, newlines, '='
+        _raw = _raw.replace("-", "+").replace("_", "/")
+        _txt = base64.b64decode(_raw + "=" * (-len(_raw) % 4)).decode("utf-8")
+        if "\t" not in _txt:
+            raise ValueError("decoded text is not a cookies file")
+        COOKIES_FILE = os.path.join(tempfile.gettempdir(), "cookies.txt")
+        with open(COOKIES_FILE, "w") as _f:
+            _f.write(_txt)
+        print("COOKIES_B64 loaded:", _txt.count("\n"), "lines")
+    except Exception as _e:  # never crash the server over bad cookies
+        print("WARNING: COOKIES_B64 is invalid and was ignored:", _e)
 HAS_FFMPEG = shutil.which("ffmpeg") is not None
 
 PLATFORMS = {
@@ -61,18 +74,21 @@ _hits = defaultdict(deque)
 
 # ---------------------------------------------------------------- helpers
 def detect_platform(url: str) -> str:
-    """Validate the URL and return the platform name. Allowlist prevents SSRF/abuse."""
+    """Validate the URL and block private/internal hosts (SSRF). Returns hostname."""
     try:
         p = urlparse(url.strip())
+        host = (p.hostname or "").lower()
     except Exception:
         raise HTTPException(400, "Invalid URL")
-    if p.scheme not in ("http", "https") or not p.hostname:
+    if p.scheme not in ("http", "https") or not host:
         raise HTTPException(400, "URL must start with http:// or https://")
-    host = p.hostname.lower()
-    for name, domains in PLATFORMS.items():
-        if any(host == d or host.endswith("." + d) for d in domains):
-            return name
-    raise HTTPException(400, "Only Instagram, Facebook and TikTok links are supported")
+    try:
+        for res in socket.getaddrinfo(host, None):
+            if not ipaddress.ip_address(res[4][0]).is_global:
+                raise HTTPException(400, "This address is not allowed")
+    except socket.gaierror:
+        raise HTTPException(400, "Could not resolve host")
+    return host
 
 
 def auth(
@@ -101,6 +117,7 @@ def base_opts() -> dict:
         "noplaylist": True,
         "socket_timeout": 20,
         "retries": 3,
+        "allowed_extractors": ["default"] if ALLOW_GENERIC else ["default", "-generic"],
     }
     if COOKIES_FILE and os.path.exists(COOKIES_FILE):
         opts["cookiefile"] = COOKIES_FILE
@@ -122,18 +139,36 @@ def fetch_info(url: str) -> dict:
     opts = {**base_opts(), "skip_download": True}
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=False)
-    if info.get("entries"):  # carousel / playlist -> first item
-        info = next(iter(info["entries"]))
-    heights = sorted({f["height"] for f in info.get("formats", []) if f.get("height")}, reverse=True)
+    if info.get("entries"):
+        info = next((e for e in info["entries"] if e), info)
+    rows = []
+    for f in info.get("formats") or ([info] if info.get("url") else []):
+        u = f.get("url")
+        if not u or not u.startswith("http"):
+            continue
+        vc, ac = f.get("vcodec"), f.get("acodec")
+        unk = vc is None and ac is None
+        v = unk or vc not in (None, "none")
+        a = unk or ac not in (None, "none")
+        if not v and not a:
+            continue
+        proto = f.get("protocol") or ""
+        rows.append({
+            "id": f.get("format_id"), "ext": f.get("ext"), "height": f.get("height"),
+            "note": f.get("format_note") or f.get("format_id"),
+            "size": f.get("filesize") or f.get("filesize_approx"),
+            "kind": "video" if v and a else "video-only" if v else "audio",
+            "stream": proto.startswith(("m3u8", "http_dash", "dash", "ism", "f4m")),
+            "url": u,
+        })
+    rank = {"video": 0, "video-only": 1, "audio": 2}
+    rows.sort(key=lambda r: (rank[r["kind"]], -(r["height"] or 0)))
     return {
-        "platform": detect_platform(url),
-        "id": info.get("id"),
-        "title": info.get("title") or info.get("description", "")[:80] or "Untitled",
+        "site": info.get("extractor_key"), "id": info.get("id"),
+        "title": info.get("title") or (info.get("description") or "")[:80] or "Untitled",
         "uploader": info.get("uploader") or info.get("channel"),
-        "duration": info.get("duration"),
-        "thumbnail": info.get("thumbnail"),
-        "qualities": heights,
-        "ffmpeg": HAS_FFMPEG,
+        "duration": info.get("duration"), "thumbnail": info.get("thumbnail"),
+        "formats": rows, "server_download": SERVER_DL and HAS_FFMPEG is not None,
     }
 
 
@@ -196,6 +231,8 @@ async def api_download(
 ):
     """`type` = video | audio. `quality` = max height in pixels (e.g. 720)."""
     detect_platform(url)
+    if not SERVER_DL:
+        raise HTTPException(403, "Server downloads are disabled; use the direct links")
     if type not in ("video", "audio"):
         raise HTTPException(400, "type must be 'video' or 'audio'")
     if not _slots.acquire(blocking=False):
