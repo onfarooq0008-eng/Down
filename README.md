@@ -22,7 +22,8 @@ Open http://localhost:8000 (UI) or http://localhost:8000/docs (API docs).
 | RATE_LIMIT_PER_MIN | 10 | Requests per minute per key/IP |
 | MAX_CONCURRENT | 3 | Simultaneous downloads |
 | MAX_FILE_MB | 500 | Max file size |
-| COOKIES_FILE | (empty) | Netscape cookies.txt for login-gated Instagram/Facebook content |
+| COOKIES_FILE | (empty) | Path to a Netscape cookies.txt for login-gated Instagram/Facebook content |
+| COOKIES_B64 | (empty) | Same cookies as base64 text (easier on Koyeb: paste as a secret env var) |
 
 ## Notes
 - Keep yt-dlp updated (`pip install -U yt-dlp`); these platforms change often.

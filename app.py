@@ -31,6 +31,12 @@ RATE_LIMIT = int(os.getenv("RATE_LIMIT_PER_MIN", "10"))
 MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT", "3"))
 MAX_MB = int(os.getenv("MAX_FILE_MB", "500"))
 COOKIES_FILE = os.getenv("COOKIES_FILE", "")  # Netscape cookies.txt (needed for some IG/FB content)
+_b64 = os.getenv("COOKIES_B64", "").strip()  # alternative: base64 of cookies.txt as an env var
+if _b64:
+    import base64
+    COOKIES_FILE = os.path.join(tempfile.gettempdir(), "cookies.txt")
+    with open(COOKIES_FILE, "wb") as _f:
+        _f.write(base64.b64decode(_b64))
 HAS_FFMPEG = shutil.which("ffmpeg") is not None
 
 PLATFORMS = {
